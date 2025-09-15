@@ -237,7 +237,7 @@ MULTI_MODAL_TEXT_GENERATION_MODELS = [
     "llama4",
 ]
 
-SSM_MODELS = ["mamba", "falcon_mamba"]
+SSM_MODELS = ["mamba", "falcon_mamba", "qwen3_next"]
 
 
 def save_config(config, save_dir):

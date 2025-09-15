@@ -6861,3 +6861,82 @@ class Qwen3MoeModelPatcher(OVDecoderModelPatcher):
 
         if is_transformers_version(">=", "4.53"):
             Qwen3MoeSparseMoeBlock.forward = self.original_moe_forward
+
+
+class Qwen3NextModelPatcher(OVDecoderModelPatcher):
+    def __init__(
+        self,
+        config: "OnnxConfig",
+        model: Union["PreTrainedModel", "TFPreTrainedModel"],
+        model_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(config, model, model_kwargs)
+        from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextDynamicCache
+        class Qwen3HybridDynamicCacheWrap(Qwen3NextDynamicCache):
+            def __init__(self, config, conv_states, recurrent_states, key_cache, value_cache):
+                super().init(config)
+                self.conv_states = conv_states
+                self.recurrent_states = recurrent_states
+                self.key_cache = key_cache
+                self.value_cache = value_cache
+            
+        def patched_forward(
+            input_ids,
+            attention_mask=None,
+            position_ids=None,
+            # cache_position=None,
+            past_key_values=None,
+        ):
+            num_hidden_layers = self.real_config._config.num_hidden_layers
+            use_cache = False
+            wrapped_cache_params = None
+            if past_key_values is not None:
+                use_cache = True
+                conv_states = []
+                recurrent_states = []
+                key_cache = []
+                value_cache = []
+                for idx in range(num_hidden_layers):
+                    batch_size = past_key_values[4 * idx].size(0)
+                    key_cache.append(past_key_values[4 * idx])
+                    value_cache.append(past_key_values[4 * idx + 1])
+                    conv_states.append(past_key_values[4 * idx + 2])
+                    recurrent_states.append(past_key_values[4 * idx + 3])
+                wrapped_cache_params = Zamba2HybridDynamicCacheWrap(
+                    self.real_config._config, batch_size, conv_states, ssm_states, key_cache, value_cache
+                )
+            causal_lm_output = self.orig_forward(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=wrapped_cache_params,
+                # cache_position=cache_position,
+                use_cache=use_cache,
+            )
+            outputs = {"logits": causal_lm_output.logits}
+            
+            if use_cache:
+                past_key_values = causal_lm_output.past_key_values
+                # unwrap Zamba2HybridDynamicCache object
+                present_key_values = []
+                # inputs passed in an order of (key, value, conv_state, ssm_state)
+                for idx in range(num_hidden_layers):
+                    present_key_values.append(past_key_values.key_cache[idx])
+                    present_key_values.append(past_key_values.value_cache[idx])
+                    present_key_values.append(past_key_values.conv_states[idx])
+                    present_key_values.append(past_key_values.ssm_states[idx])
+
+                outputs["present_key_values"] = present_key_values
+
+            return outputs
+        
+        self.patched_forward = patched_forward
+
+    def __enter__(self):
+        super().__enter__()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        super().__exit__(exc_type, exc_value, traceback)
+               
+                
+    
