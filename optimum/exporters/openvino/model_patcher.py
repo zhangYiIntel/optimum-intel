@@ -6873,8 +6873,9 @@ class Qwen3NextModelPatcher(OVDecoderModelPatcher):
         super().__init__(config, model, model_kwargs)
         from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextDynamicCache
         class Qwen3HybridDynamicCacheWrap(Qwen3NextDynamicCache):
-            def __init__(self, config, conv_states, recurrent_states, key_cache, value_cache):
-                super().init(config)
+            def __init__(self, config, batch_size, conv_states, recurrent_states, key_cache, value_cache):
+                super().__init__(config)
+                self.batch_size = batch_size
                 self.conv_states = conv_states
                 self.recurrent_states = recurrent_states
                 self.key_cache = key_cache
@@ -6902,8 +6903,8 @@ class Qwen3NextModelPatcher(OVDecoderModelPatcher):
                     value_cache.append(past_key_values[4 * idx + 1])
                     conv_states.append(past_key_values[4 * idx + 2])
                     recurrent_states.append(past_key_values[4 * idx + 3])
-                wrapped_cache_params = Zamba2HybridDynamicCacheWrap(
-                    self.real_config._config, batch_size, conv_states, ssm_states, key_cache, value_cache
+                wrapped_cache_params = Qwen3HybridDynamicCacheWrap(
+                    self.real_config._config, batch_size, conv_states, recurrent_states, key_cache, value_cache
                 )
             causal_lm_output = self.orig_forward(
                 input_ids=input_ids,
@@ -6924,7 +6925,7 @@ class Qwen3NextModelPatcher(OVDecoderModelPatcher):
                     present_key_values.append(past_key_values.key_cache[idx])
                     present_key_values.append(past_key_values.value_cache[idx])
                     present_key_values.append(past_key_values.conv_states[idx])
-                    present_key_values.append(past_key_values.ssm_states[idx])
+                    present_key_values.append(past_key_values.recurrent_states[idx])
 
                 outputs["present_key_values"] = present_key_values
 
