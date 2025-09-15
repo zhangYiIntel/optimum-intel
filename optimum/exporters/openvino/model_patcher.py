@@ -6934,9 +6934,17 @@ class Qwen3NextModelPatcher(OVDecoderModelPatcher):
 
     def __enter__(self):
         super().__enter__()
+        if is_transformers_version(">=", "4.52.0"):
+            from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextSparseMoeBlock
+
+            modulewise_patch(self._model, Qwen3NextSparseMoeBlock, _qwen2moe_sparse_block_forward)
 
     def __exit__(self, exc_type, exc_value, traceback):
         super().__exit__(exc_type, exc_value, traceback)
+        if is_transformers_version(">=", "4.52.0"):
+            from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextSparseMoeBlock
+
+            modulewise_unpatch(self._model, Qwen3NextSparseMoeBlock)
                
                 
     
