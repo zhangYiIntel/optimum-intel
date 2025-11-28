@@ -26,6 +26,7 @@ from transformers.cache_utils import DynamicCache, EncoderDecoderCache
 from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPast, BaseModelOutputWithPooling
 from transformers.models.phi3.modeling_phi3 import apply_rotary_pos_emb, repeat_kv
 from transformers.models.speecht5.modeling_speecht5 import SpeechT5EncoderWithSpeechPrenet
+from diffusers.models.transformers.transformer_z_image import ZImageTransformer2DModel
 
 from optimum.exporters.onnx.base import OnnxConfig
 from optimum.exporters.onnx.model_patcher import (
@@ -3319,8 +3320,10 @@ def _zimage_forward(self,
         patch_size=2,
         f_patch_size=1,) -> torch.Tensor:
     x = [x]
-    t = [t]
-    self.forward(x, t, cap_feats, patch_size, f_patch_size)
+    cap_feats = [cap_feats]
+    y = self._orig_forward(x, t, cap_feats, patch_size, f_patch_size)
+    return y
+    
 
 class ZImageTransfromerModelPatcher(ModelPatcher):
     def __enter__(self):

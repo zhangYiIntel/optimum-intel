@@ -2128,6 +2128,7 @@ class T5EncoderOpenVINOConfig(CLIPTextOpenVINOConfig):
 
 
 @register_in_tasks_manager("gemma2-text-encoder", *["feature-extraction"], library_name="diffusers")
+@register_in_tasks_manager("qwen3", *["feature-extraction"], library_name="diffusers")
 class Gemma2TextEncoderOpenVINOConfig(CLIPTextOpenVINOConfig):
     _MODEL_PATCHER = SanaTextEncoderModelPatcher
 
@@ -4493,7 +4494,7 @@ class DummyZImageTransformerInputGenerator(DummyInputGenerator):
     SUPPORTED_INPUT_NAMES = (
         "x",
         "cap_feats",
-        "timestep",
+        "t",
     )
 
     def __init__(
@@ -4504,10 +4505,15 @@ class DummyZImageTransformerInputGenerator(DummyInputGenerator):
         num_channels: int = DEFAULT_DUMMY_SHAPES["num_channels"],
         width: int = DEFAULT_DUMMY_SHAPES["width"] // 4,
         height: int = DEFAULT_DUMMY_SHAPES["height"] // 4,
-        seq_length: int = DEFAULT_DUMMY_SHAPES["sequence_length"],
+        sequence_length: int = DEFAULT_DUMMY_SHAPES["sequence_length"],
         **kwargs,
     ):
-        super().__init__(task, normalized_config, batch_size, num_channels, width, height, seq_length, **kwargs)
+        self.normalized_config = normalized_config
+        self.batch_size = batch_size
+        self.sequence_length = sequence_length
+        self.num_channels = num_channels
+        self.width = width
+        self.height = height
         if getattr(normalized_config, "in_channels", None):
             self.num_channels = normalized_config.in_channels // 4
         if getattr(normalized_config, "cap_feat_dim", None):
@@ -4518,26 +4524,36 @@ class DummyZImageTransformerInputGenerator(DummyInputGenerator):
             shape = [self.num_channels * 4, 1, self.height * 4, self.width * 4]
             return self.random_float_tensor(shape, framework=framework, dtype=float_dtype)
         if input_name == "cap_feats":
-            shape = [self.seq_length, self.cap_feat_dim]
+            shape = [self.sequence_length, self.cap_feat_dim]
             return self.random_float_tensor(shape, framework=framework, dtype=float_dtype)
-        if input_name == "timestep":
+        if input_name == "t":
             return self.random_int_tensor([1], max_value=20, min_value=1, framework=framework, dtype=int_dtype)
 
         return super().generate(input_name, framework, int_dtype, float_dtype)
     
 @register_in_tasks_manager("z-image-transformer-2d", *["semantic-segmentation"], library_name="diffusers")
-class ZTransformerOpenVINOConfig(UNetOpenVINOConfig):
+class ZTransformerOpenVINOConfig(OnnxConfig):
+    NORMALIZED_CONFIG_CLASS = NormalizedVisionConfig
+
     DUMMY_INPUT_GENERATOR_CLASSES = (
         DummyZImageTransformerInputGenerator,
     )
 
     @property
     def inputs(self):
-        common_inputs = super().inputs
+        common_inputs = {}
         common_inputs["x"] = {2: "height", 3: "width"}
         common_inputs["cap_feats"] =  {0: "seq_len"}
+        common_inputs["t"] = {0: "batch_size"}
         return common_inputs
-
+    
+    @property
+    def outputs(self):
+        common_outputs = {
+            "unified": {0: "seq_len"},
+        }
+        return common_outputs
+    
     def patch_model_for_export(
         self, model: PreTrainedModel, model_kwargs: Optional[Dict[str, Any]] = None
     ) -> ModelPatcher:

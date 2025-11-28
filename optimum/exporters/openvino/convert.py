@@ -1093,7 +1093,7 @@ def get_zimage_models_for_export(pipeline, exporter, int_dtype, float_dtype):
         text_encoder_config_constructor = TasksManager.get_exporter_config_constructor(
             model=text_encoder,
             exporter=exporter,
-            library_name="transformers",
+            library_name="diffusers",
             task="feature-extraction",
             model_type="qwen3",
         )
