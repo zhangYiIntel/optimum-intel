@@ -125,6 +125,11 @@ if is_diffusers_version(">=", "0.35.0"):
     from diffusers.models.cache_utils import CacheMixin
 else:
     CacheMixin = object
+    
+if is_diffusers_version(">=", "0.35.0"):
+    from diffusers import ZImagePipeline
+else:
+    ZImagePipeline = object
 
 DIFFUSION_MODEL_TRANSFORMER_SUBFOLDER = "transformer"
 DIFFUSION_MODEL_TEXT_ENCODER_3_SUBFOLDER = "text_encoder_3"
@@ -1692,7 +1697,13 @@ class OVLTXPipeline(OVDiffusionPipeline, OVTextualInversionLoaderMixin, LTXPipel
     main_input_name = "prompt"
     export_feature = "text-to-video"
     auto_model_class = LTXPipeline
-
+    
+class OVZImagePipeline(OVDiffusionPipeline, OVTextualInversionLoaderMixin, ZImagePipeline):
+    main_input_name = "prompt"
+    export_feature = "text-to-image"
+    auto_model_class = ZImagePipeline
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 SUPPORTED_OV_PIPELINES = [
     OVStableDiffusionPipeline,
@@ -1778,6 +1789,10 @@ if is_diffusers_version(">=", "0.32.0"):
 if is_diffusers_version(">=", "0.33.0"):
     SUPPORTED_OV_PIPELINES.append(OVSanaSprintPipeline)
     OV_TEXT2IMAGE_PIPELINES_MAPPING["sana-sprint"] = OVSanaSprintPipeline
+    
+if is_diffusers_version(">=", "0.35.0"):
+    SUPPORTED_OV_PIPELINES.append(OVZImagePipeline)
+    OV_TEXT2IMAGE_PIPELINES_MAPPING["z-image"] = OVZImagePipeline
 
 SUPPORTED_OV_PIPELINES_MAPPINGS = [
     OV_TEXT2IMAGE_PIPELINES_MAPPING,

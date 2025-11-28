@@ -3312,6 +3312,27 @@ class FluxTransfromerModelPatcher(ModelPatcher):
             self._model.pos_embed.forward = self._model.pos_embed._orig_forward
 
 
+def _zimage_forward(self,
+        x,
+        t,
+        cap_feats,
+        patch_size=2,
+        f_patch_size=1,) -> torch.Tensor:
+    x = [x]
+    t = [t]
+    self.forward(x, t, cap_feats, patch_size, f_patch_size)
+
+class ZImageTransfromerModelPatcher(ModelPatcher):
+    def __enter__(self):
+        super().__enter__()
+        self._model._orig_forward = self._model.forward
+        self._model.forward = types.MethodType(_zimage_forward, self._model)
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        super().__exit__(exc_type, exc_value, traceback)
+        if hasattr(self._model, "_orig_forward"):
+            self._model.forward = self._model._orig_forward
+
 def _minicpmv_resampler_forward(self, image_feature, pos_embed, key_padding_mask):
     bs = image_feature.shape[0]
     image_feature = self.kv_proj(image_feature)  # B * L * D

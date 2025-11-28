@@ -141,6 +141,7 @@ from .model_patcher import (
     SanaTextEncoderModelPatcher,
     XverseModelPatcher,
     Zamba2ModelPatcher,
+    ZImageTransfromerModelPatcher,
 )
 
 
@@ -4488,3 +4489,57 @@ class LFM2OpenVINOConfig(MambaOpenVINOConfig):
         if self.use_past_in_inputs:
             self.add_past_key_values(common_inputs, direction="inputs")
         return common_inputs
+class DummyZImageTransformerInputGenerator(DummyInputGenerator):
+    SUPPORTED_INPUT_NAMES = (
+        "x",
+        "cap_feats",
+        "timestep",
+    )
+
+    def __init__(
+        self,
+        task: str,
+        normalized_config: NormalizedVisionConfig,
+        batch_size: int = DEFAULT_DUMMY_SHAPES["batch_size"],
+        num_channels: int = DEFAULT_DUMMY_SHAPES["num_channels"],
+        width: int = DEFAULT_DUMMY_SHAPES["width"] // 4,
+        height: int = DEFAULT_DUMMY_SHAPES["height"] // 4,
+        seq_length: int = DEFAULT_DUMMY_SHAPES["sequence_length"],
+        **kwargs,
+    ):
+        super().__init__(task, normalized_config, batch_size, num_channels, width, height, seq_length, **kwargs)
+        if getattr(normalized_config, "in_channels", None):
+            self.num_channels = normalized_config.in_channels // 4
+        if getattr(normalized_config, "cap_feat_dim", None):
+            self.cap_feat_dim = normalized_config.cap_feat_dim
+
+    def generate(self, input_name: str, framework: str = "pt", int_dtype: str = "int64", float_dtype: str = "fp32"):
+        if input_name == "x":
+            shape = [self.num_channels * 4, 1, self.height * 4, self.width * 4]
+            return self.random_float_tensor(shape, framework=framework, dtype=float_dtype)
+        if input_name == "cap_feats":
+            shape = [self.seq_length, self.cap_feat_dim]
+            return self.random_float_tensor(shape, framework=framework, dtype=float_dtype)
+        if input_name == "timestep":
+            return self.random_int_tensor([1], max_value=20, min_value=1, framework=framework, dtype=int_dtype)
+
+        return super().generate(input_name, framework, int_dtype, float_dtype)
+    
+@register_in_tasks_manager("z-image-transformer-2d", *["semantic-segmentation"], library_name="diffusers")
+class ZTransformerOpenVINOConfig(UNetOpenVINOConfig):
+    DUMMY_INPUT_GENERATOR_CLASSES = (
+        DummyZImageTransformerInputGenerator,
+    )
+
+    @property
+    def inputs(self):
+        common_inputs = super().inputs
+        common_inputs["x"] = {2: "height", 3: "width"}
+        common_inputs["cap_feats"] =  {0: "seq_len"}
+        return common_inputs
+
+    def patch_model_for_export(
+        self, model: PreTrainedModel, model_kwargs: Optional[Dict[str, Any]] = None
+    ) -> ModelPatcher:
+        # OpenVINO can not handle complex data in this model
+        return ZImageTransfromerModelPatcher(self, model, model_kwargs=model_kwargs)

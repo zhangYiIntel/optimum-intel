@@ -979,7 +979,7 @@ def get_diffusion_models_for_export_ext(
     is_ltx_video = pipeline.__class__.__name__.startswith("LTX")
     is_sd = pipeline.__class__.__name__.startswith("StableDiffusion") and not is_sd3
     is_lcm = pipeline.__class__.__name__.startswith("LatentConsistencyModel")
-    is_zimage = pipeline.__class__.__name__.startswith("Z-Image")
+    is_zimage = pipeline.__class__.__name__.startswith("ZImage")
 
     if is_sd or is_sdxl or is_lcm:
         tokenizer = pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer
@@ -1102,7 +1102,6 @@ def get_zimage_models_for_export(pipeline, exporter, int_dtype, float_dtype):
         )
         models_for_export["text_encoder"] = (text_encoder, text_encoder_export_config)
     transformer = pipeline.transformer
-    transformer.config.text_encoder_projection_dim = transformer.config.joint_attention_dim
     transformer.config.requires_aesthetics_score = getattr(pipeline.config, "requires_aesthetics_score", False)
     transformer.config.time_cond_proj_dim = None
     export_config_constructor = TasksManager.get_exporter_config_constructor(
@@ -1126,7 +1125,7 @@ def get_zimage_models_for_export(pipeline, exporter, int_dtype, float_dtype):
         exporter=exporter,
         library_name="diffusers",
         task="semantic-segmentation",
-        model_type="z-image-decoder",
+        model_type="dcae-decoder",
     )
     vae_decoder_export_config = vae_config_constructor(
         vae_decoder.config, int_dtype=int_dtype, float_dtype=float_dtype
