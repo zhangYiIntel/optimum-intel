@@ -3314,14 +3314,12 @@ class FluxTransfromerModelPatcher(ModelPatcher):
 
 
 def _zimage_forward(self,
-        x,
-        t,
-        cap_feats,
-        patch_size=2,
-        f_patch_size=1,) -> torch.Tensor:
-    x = [x]
-    cap_feats = [cap_feats]
-    y = self._orig_forward(x, t, cap_feats, patch_size, f_patch_size)
+        hidden_states,
+        timestep,
+        encoder_hidden_states,) -> torch.Tensor:
+    hidden_states = [hidden_states]
+    encoder_hidden_states = [encoder_hidden_states]
+    y = self._orig_forward(x=hidden_states, t=timestep, cap_feats=encoder_hidden_states)
     return y
     
 

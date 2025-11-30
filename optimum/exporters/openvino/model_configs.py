@@ -4492,9 +4492,9 @@ class LFM2OpenVINOConfig(MambaOpenVINOConfig):
         return common_inputs
 class DummyZImageTransformerInputGenerator(DummyInputGenerator):
     SUPPORTED_INPUT_NAMES = (
-        "x",
-        "cap_feats",
-        "t",
+        "hidden_states",
+        "encoder_hidden_states",
+        "timestep",
     )
 
     def __init__(
@@ -4520,13 +4520,13 @@ class DummyZImageTransformerInputGenerator(DummyInputGenerator):
             self.cap_feat_dim = normalized_config.cap_feat_dim
 
     def generate(self, input_name: str, framework: str = "pt", int_dtype: str = "int64", float_dtype: str = "fp32"):
-        if input_name == "x":
+        if input_name == "hidden_states":
             shape = [self.num_channels * 4, 1, self.height * 4, self.width * 4]
             return self.random_float_tensor(shape, framework=framework, dtype=float_dtype)
-        if input_name == "cap_feats":
+        if input_name == "encoder_hidden_states":
             shape = [self.sequence_length, self.cap_feat_dim]
             return self.random_float_tensor(shape, framework=framework, dtype=float_dtype)
-        if input_name == "t":
+        if input_name == "timestep":
             return self.random_int_tensor([1], max_value=20, min_value=1, framework=framework, dtype=int_dtype)
 
         return super().generate(input_name, framework, int_dtype, float_dtype)
@@ -4542,9 +4542,9 @@ class ZTransformerOpenVINOConfig(OnnxConfig):
     @property
     def inputs(self):
         common_inputs = {}
-        common_inputs["x"] = {2: "height", 3: "width"}
-        common_inputs["cap_feats"] =  {0: "seq_len"}
-        common_inputs["t"] = {0: "batch_size"}
+        common_inputs["hidden_states"] = {2: "height", 3: "width"}
+        common_inputs["encoder_hidden_states"] =  {0: "seq_len"}
+        common_inputs["timestep"] = {0: "batch_size"}
         return common_inputs
     
     @property

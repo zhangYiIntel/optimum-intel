@@ -794,7 +794,7 @@ class OVDiffusionPipeline(OVBaseModel, DiffusionPipeline):
         shapes = {}
         for inputs in model.inputs:
             shapes[inputs] = inputs.get_partial_shape()
-            if inputs.get_any_name() in ["timestep", "guidance"]:
+            if inputs.get_any_name() in ["timestep", "guidance", "t"]:
                 shapes[inputs][0] = batch_size
             elif inputs.get_any_name() == "hidden_states":
                 in_channels = self.transformer.config.get("in_channels", None)
@@ -824,6 +824,8 @@ class OVDiffusionPipeline(OVBaseModel, DiffusionPipeline):
                 shapes[inputs] = [batch_size, -1, 3] if is_diffusers_version("<", "0.31.0") else [-1, 3]
             elif inputs.get_any_name() in ["height", "width", "num_frames", "rope_interpolation_scale"]:
                 shapes[inputs] = inputs.get_partial_shape()
+            elif inputs.get_any_name() == "cap_feats":
+                shapes[inputs][0] = -1 
             else:
                 shapes[inputs][0] = batch_size
                 shapes[inputs][1] = -1  # text_encoder_3 may have vary input length
