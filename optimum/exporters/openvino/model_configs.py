@@ -4527,7 +4527,7 @@ class DummyZImageTransformerInputGenerator(DummyInputGenerator):
             shape = [self.batch_size, self.sequence_length, self.cap_feat_dim]
             return self.random_float_tensor(shape, framework=framework, dtype=float_dtype)
         if input_name == "timestep":
-            return self.random_int_tensor([1], max_value=20, min_value=1, framework=framework, dtype=int_dtype)
+            return self.random_float_tensor([1], max_value=1, min_value=0, framework=framework, dtype=float_dtype)
 
         return super().generate(input_name, framework, int_dtype, float_dtype)
     
