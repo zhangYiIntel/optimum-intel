@@ -3317,8 +3317,8 @@ def _zimage_forward(self,
         hidden_states,
         timestep,
         encoder_hidden_states,) -> torch.Tensor:
-    hidden_states = [hidden_states]
-    encoder_hidden_states = [encoder_hidden_states]
+    hidden_states = list(torch.unbind(hidden_states, dim=0))
+    encoder_hidden_states = list(torch.unbind(encoder_hidden_states, dim=0))
     y = self._orig_forward(x=hidden_states, t=timestep, cap_feats=encoder_hidden_states)
     return y
     

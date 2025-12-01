@@ -794,7 +794,7 @@ class OVDiffusionPipeline(OVBaseModel, DiffusionPipeline):
         shapes = {}
         for inputs in model.inputs:
             shapes[inputs] = inputs.get_partial_shape()
-            if inputs.get_any_name() in ["timestep", "guidance", "t"]:
+            if inputs.get_any_name() in ["timestep", "guidance"]:
                 shapes[inputs][0] = batch_size
             elif inputs.get_any_name() == "hidden_states":
                 in_channels = self.transformer.config.get("in_channels", None)
@@ -809,6 +809,8 @@ class OVDiffusionPipeline(OVBaseModel, DiffusionPipeline):
                         self.is_dynamic = True
                 if inputs.get_partial_shape().rank.get_length() == 4:
                     shapes[inputs] = [batch_size, in_channels, height, width]
+                elif inputs.get_partial_shape().rank.get_length() == 5:
+                    shapes[inputs] = [batch_size, in_channels, num_frames, height, width]
                 else:
                     shapes[inputs] = [batch_size, packed_height_width, in_channels]
 
@@ -824,8 +826,6 @@ class OVDiffusionPipeline(OVBaseModel, DiffusionPipeline):
                 shapes[inputs] = [batch_size, -1, 3] if is_diffusers_version("<", "0.31.0") else [-1, 3]
             elif inputs.get_any_name() in ["height", "width", "num_frames", "rope_interpolation_scale"]:
                 shapes[inputs] = inputs.get_partial_shape()
-            elif inputs.get_any_name() == "cap_feats":
-                shapes[inputs][0] = -1 
             else:
                 shapes[inputs][0] = batch_size
                 shapes[inputs][1] = -1  # text_encoder_3 may have vary input length
@@ -1285,7 +1285,17 @@ class OVModelTransformer(OVPipelinePart):
         return_dict: bool = True,
     ):
         self.compile()
-
+                
+        # Convert list inputs to tensors if needed
+        if isinstance(hidden_states, list):
+            hidden_states = torch.stack(hidden_states)
+            return_dict = False
+        
+        if isinstance(pooled_projections, list):
+            timestep = encoder_hidden_states
+            encoder_hidden_states = torch.stack(pooled_projections)
+            pooled_projections = None
+        
         model_inputs = {
             "hidden_states": hidden_states,
             "timestep": timestep,
@@ -1313,12 +1323,15 @@ class OVModelTransformer(OVPipelinePart):
             if not isinstance(rope_interpolation_scale, torch.Tensor):
                 rope_interpolation_scale = torch.tensor(rope_interpolation_scale)
             model_inputs["rope_interpolation_scale"] = rope_interpolation_scale
-
+        
+        
         ov_outputs = self.request(model_inputs, share_inputs=True).to_dict()
 
         model_outputs = {}
         for key, value in ov_outputs.items():
             model_outputs[next(iter(key.names))] = torch.from_numpy(value)
+            if "unified_results" in model_outputs:
+                model_outputs["unified_results"] = [model_outputs["unified_results"]]
 
         if return_dict:
             return model_outputs

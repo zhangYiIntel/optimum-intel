@@ -4509,7 +4509,7 @@ class DummyZImageTransformerInputGenerator(DummyInputGenerator):
         **kwargs,
     ):
         self.normalized_config = normalized_config
-        self.batch_size = batch_size
+        self.batch_size = 1
         self.sequence_length = sequence_length
         self.num_channels = num_channels
         self.width = width
@@ -4521,10 +4521,10 @@ class DummyZImageTransformerInputGenerator(DummyInputGenerator):
 
     def generate(self, input_name: str, framework: str = "pt", int_dtype: str = "int64", float_dtype: str = "fp32"):
         if input_name == "hidden_states":
-            shape = [self.num_channels * 4, 1, self.height * 4, self.width * 4]
+            shape = [self.batch_size, self.num_channels * 4, 1, self.height * 4, self.width * 4]
             return self.random_float_tensor(shape, framework=framework, dtype=float_dtype)
         if input_name == "encoder_hidden_states":
-            shape = [self.sequence_length, self.cap_feat_dim]
+            shape = [self.batch_size, self.sequence_length, self.cap_feat_dim]
             return self.random_float_tensor(shape, framework=framework, dtype=float_dtype)
         if input_name == "timestep":
             return self.random_int_tensor([1], max_value=20, min_value=1, framework=framework, dtype=int_dtype)
@@ -4542,15 +4542,15 @@ class ZTransformerOpenVINOConfig(OnnxConfig):
     @property
     def inputs(self):
         common_inputs = {}
-        common_inputs["hidden_states"] = {2: "height", 3: "width"}
-        common_inputs["encoder_hidden_states"] =  {0: "seq_len"}
+        common_inputs["hidden_states"] = {0: "batch_size", 2: "num_frames", 3: "height", 4: "width"}
+        common_inputs["encoder_hidden_states"] =  {0: "batch_size", 1: "seq_len"}
         common_inputs["timestep"] = {0: "batch_size"}
         return common_inputs
     
     @property
     def outputs(self):
         common_outputs = {
-            "unified": {0: "seq_len"},
+            "unified_results": {2: "height", 3: "width"},
         }
         return common_outputs
     
