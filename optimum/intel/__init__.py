@@ -141,6 +141,7 @@ except OptionalDependencyNotAvailable:
             "OVPipelineForInpainting",
             "OVPipelineForText2Video",
             "OVDiffusionPipeline",
+            "OVZImagePipeline",
         ]
     )
 else:
@@ -168,6 +169,7 @@ else:
             "OVPipelineForInpainting",
             "OVPipelineForText2Video",
             "OVDiffusionPipeline",
+            "OVZImagePipeline",
         ]
     )
 
