@@ -141,7 +141,7 @@ from .model_patcher import (
     SanaTextEncoderModelPatcher,
     XverseModelPatcher,
     Zamba2ModelPatcher,
-    ZImageTransfromerModelPatcher,
+    ZImageTransformerModelPatcher,
 )
 
 
@@ -4558,4 +4558,4 @@ class ZTransformerOpenVINOConfig(OnnxConfig):
         self, model: PreTrainedModel, model_kwargs: Optional[Dict[str, Any]] = None
     ) -> ModelPatcher:
         # OpenVINO can not handle complex data in this model
-        return ZImageTransfromerModelPatcher(self, model, model_kwargs=model_kwargs)
+        return ZImageTransformerModelPatcher(self, model, model_kwargs=model_kwargs)
