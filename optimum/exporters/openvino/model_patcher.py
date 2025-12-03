@@ -26,7 +26,6 @@ from transformers.cache_utils import DynamicCache, EncoderDecoderCache
 from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPast, BaseModelOutputWithPooling
 from transformers.models.phi3.modeling_phi3 import apply_rotary_pos_emb, repeat_kv
 from transformers.models.speecht5.modeling_speecht5 import SpeechT5EncoderWithSpeechPrenet
-from diffusers.models.transformers.transformer_z_image import ZImageTransformer2DModel
 
 from optimum.exporters.onnx.base import OnnxConfig
 from optimum.exporters.onnx.model_patcher import (
@@ -3456,6 +3455,56 @@ def _zimage_forward(
     return x[0]  # Return single tensor instead of (x, {})
 
 
+def _zimage_transformerblock_forward(
+    self,
+    x: torch.Tensor,
+    attn_mask: torch.Tensor,
+    freqs_cis: torch.Tensor,
+    adaln_input: Optional[torch.Tensor] = None,
+):
+    if self.modulation:
+        assert adaln_input is not None
+        scale_msa, gate_msa, scale_mlp, gate_mlp = self.adaLN_modulation(adaln_input).unsqueeze(1).chunk(4, dim=2)
+        gate_msa, gate_mlp = gate_msa.tanh(), gate_mlp.tanh()
+        scale_msa, scale_mlp = 1.0 + scale_msa, 1.0 + scale_mlp
+
+        # Attention block
+        attn_out = self.attention(
+            self.attention_norm1(x) * scale_msa,
+            attention_mask=attn_mask,
+            freqs_cis=freqs_cis,
+        )
+        x = x + gate_msa * self.attention_norm2(attn_out)
+
+        # FFN block
+        # Update: clamp the output of feed_forward to avoid overflow in float16
+        x = x + gate_mlp * self.ffn_norm2(
+            torch.clamp(
+                self.feed_forward(
+                    self.ffn_norm1(x) * scale_mlp,
+                ),
+                torch.finfo(torch.float16).min,
+                torch.finfo(torch.float16).max,
+            )
+        )
+    else:
+        # Attention block
+        attn_out = self.attention(
+            self.attention_norm1(x),
+            attention_mask=attn_mask,
+            freqs_cis=freqs_cis,
+        )
+        x = x + self.attention_norm2(attn_out)
+
+        # FFN block
+        x = x + self.ffn_norm2(
+            self.feed_forward(
+                self.ffn_norm1(x),
+            )
+        )
+
+    return x
+
 def _zimage_rope_embedder_precompute_freqs_cis(dim: List[int], end: List[int], theta: float = 256.0):
     with torch.device("cpu"):
         freqs_cis = []
@@ -3708,10 +3757,19 @@ class ZImageTransformerModelPatcher(ModelPatcher):
         self._model.rope_embedder.freqs_cis = None
 
         for layer in self._model.noise_refiner:
+            layer._orig_forward = layer.forward
+            layer.forward = types.MethodType(_zimage_transformerblock_forward, layer)
+            layer.attention._orig_processor = layer.attention.processor
             layer.attention.processor = PatchedZSingleStreamAttnProcessor()
         for layer in self._model.context_refiner:
+            layer._orig_forward = layer.forward
+            layer.forward = types.MethodType(_zimage_transformerblock_forward, layer)
+            layer.attention._orig_processor = layer.attention.processor
             layer.attention.processor = PatchedZSingleStreamAttnProcessor()
         for layer in self._model.layers:
+            layer._orig_forward = layer.forward
+            layer.forward = types.MethodType(_zimage_transformerblock_forward, layer)
+            layer.attention._orig_processor = layer.attention.processor
             layer.attention.processor = PatchedZSingleStreamAttnProcessor()
 
         self._orig_forward = self._model.forward
@@ -3728,11 +3786,20 @@ class ZImageTransformerModelPatcher(ModelPatcher):
         transformer_z_image.ZSingleStreamAttnProcessor = self._orig_ZSingleStreamAttnProcessor
 
         self._model.rope_embedder = self._orig_rope_embedder
-
-        if hasattr(self, "_orig_forward"):
-            self._model.forward = self._orig_forward
-        if hasattr(self, "_orig_patchify_and_embed"):
-            self._model.patchify_and_embed = self._orig_patchify_and_embed
+        self._model.forward = self._orig_forward
+        self._model.patchify_and_embed = self._orig_patchify_and_embed
+        
+        for layer in self._model.noise_refiner:
+            layer.forward = layer._orig_forward
+            layer.attention.processor = layer.attention._orig_processor
+        
+        for layer in self._model.context_refiner:
+            layer.forward = layer._orig_forward
+            layer.attention.processor = layer.attention._orig_processor
+        
+        for layer in self._model.layers:
+            layer.forward = layer._orig_forward
+            layer.attention.processor = layer.attention._orig_processor
 
 def _minicpmv_resampler_forward(self, image_feature, pos_embed, key_padding_mask):
     bs = image_feature.shape[0]
