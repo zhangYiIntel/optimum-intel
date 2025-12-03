@@ -3527,16 +3527,6 @@ def _zimage_rope_embedder_call(self, ids: torch.Tensor):
     assert ids.shape[-1] == len(self.axes_dims)
     device = ids.device
 
-    if self.freqs_cis is None:
-        print("Precomputing freqs_cis for RoPE embeddings...")
-        self.freqs_cis = self.precompute_freqs_cis(
-            self.axes_dims, self.axes_lens, theta=self.theta
-        )
-        self.freqs_cis = [freqs_cis.to(device) for freqs_cis in self.freqs_cis]
-    else:
-        if self.freqs_cis[0].device != device:
-            self.freqs_cis = [freqs_cis.to(device) for freqs_cis in self.freqs_cis]
-
     result = []
     for i in range(len(self.axes_dims)):
         index = ids[:, i]
@@ -3730,6 +3720,15 @@ class ZImageTransformerModelPatcher(ModelPatcher):
         self._orig_ZSingleStreamAttnProcessor = transformer_z_image.ZSingleStreamAttnProcessor
 
         class PatchedRopeEmbedder(self._orig_RopeEmbedder):
+            def __init__(
+                self,
+                theta: float = 256.0,
+                axes_dims: List[int] = (16, 56, 56),
+                axes_lens: List[int] = (64, 128, 128),
+            ):
+                super().__init__(theta, axes_dims, axes_lens)
+                self.freqs_cis = self.precompute_freqs_cis(self.axes_dims, self.axes_lens, theta=self.theta)
+            
             @staticmethod
             def precompute_freqs_cis(dim, end, theta=256.0):
                 return _zimage_rope_embedder_precompute_freqs_cis(dim, end, theta)
@@ -3754,7 +3753,6 @@ class ZImageTransformerModelPatcher(ModelPatcher):
             axes_dims=self._model.rope_embedder.axes_dims,
             axes_lens=self._model.rope_embedder.axes_lens,
         )
-        self._model.rope_embedder.freqs_cis = None
 
         for layer in self._model.noise_refiner:
             layer._orig_forward = layer.forward
