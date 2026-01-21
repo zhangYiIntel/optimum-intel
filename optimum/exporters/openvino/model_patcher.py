@@ -7632,10 +7632,10 @@ def qwen3_next_gated_delta_net_forward(
             self.conv1d.bias,
             self.activation,
         )
-
         conv_state_prefill = F.pad(mixed_qkv, (self.conv_kernel_size - mixed_qkv.shape[-1], 0))
         conv_state = conv_state_dec * use_precomputed_states + conv_state_prefill * (1.0 - use_precomputed_states)
-        mixed_qkv = mixed_qkv_dec * use_precomputed_states + mixed_qkv * (1.0 - use_precomputed_states)
+        mixed_qkv_prefill = F.silu(self.conv1d(mixed_qkv)[:, :, :seq_len])
+        mixed_qkv = mixed_qkv_dec * use_precomputed_states + mixed_qkv_prefill * (1.0 - use_precomputed_states)
         cache_params.conv_states[layer_idx] = conv_state
 
         if self.causal_conv1d_fn is not None:
@@ -7670,33 +7670,41 @@ def qwen3_next_gated_delta_net_forward(
         query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
         key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
 
-    core_attn_out_prefill, last_recurrent_state_prefill = self.chunk_gated_delta_rule(
-        self,
+    # core_attn_out_prefill, last_recurrent_state_prefill = self.chunk_gated_delta_rule(
+    #     self,
+    #     query,
+    #     key,
+    #     value,
+    #     g=g,
+    #     beta=beta,
+    #     initial_state=None,
+    #     output_final_state=cache_params is not None,
+    #     use_qk_l2norm_in_kernel=True,
+    # )
+    print("!!!!!!!USE patched recurrent gated delta rule")
+    init_state = cache_params.recurrent_states[layer_idx] if cache_params is not None else None
+    combined_output = self.recurrent_attention_cell(
         query,
         key,
         value,
-        g=g,
-        beta=beta,
-        initial_state=None,
-        output_final_state=cache_params is not None,
-        use_qk_l2norm_in_kernel=True,
+        g,
+        beta,
+        init_state,
+        True,
+        True,
     )
-
-    core_attn_out_dec, last_recurrent_state_dec = self.recurrent_gated_delta_rule(
-        query[:, :1],
-        key[:, :1],
-        value[:, :1],
-        g=g[:, :1],
-        beta=beta[:, :1],
-        initial_state=recurrent_state,
-        output_final_state=cache_params is not None,
-        use_qk_l2norm_in_kernel=True,
-    )
-
-    core_attn_out = core_attn_out_dec * use_precomputed_states + core_attn_out_prefill * (1.0 - use_precomputed_states)
-    last_recurrent_state = last_recurrent_state_dec * use_precomputed_states + last_recurrent_state_prefill * (
-        1.0 - use_precomputed_states
-    )
+    num_elems = value.numel()
+    core_attn_out = combined_output[:num_elems].reshape(value.shape)
+    # Derive expected recurrent state shape directly from key/value tensors: (B, H, K, V)
+    B = value.shape[0]
+    H = value.shape[2]
+    K = key.shape[-1]
+    V = value.shape[-1]
+    last_recurrent_state = combined_output[num_elems:].reshape(B, H, K, V)
+    # core_attn_out = core_attn_out_dec * use_precomputed_states + core_attn_out_prefill * (1.0 - use_precomputed_states)
+    # last_recurrent_state = last_recurrent_state_dec * use_precomputed_states + last_recurrent_state_prefill * (
+    #     1.0 - use_precomputed_states
+    # )
 
     # Update cache
     if cache_params is not None:
@@ -7717,6 +7725,7 @@ def qwen3_next_gated_delta_net_forward(
 def patched_qwen3_next_sparse_moe_block(self, hidden_states: torch.Tensor) -> torch.Tensor:
     num_experts = self.num_experts
     batch_size, sequence_length, hidden_dim = hidden_states.shape
+    print("!!!!!! hidden_states dtype 111", hidden_states.dtype)
     hidden_states = hidden_states.view(-1, hidden_dim)
     # router_logits: (batch * sequence_length, n_experts)
     router_logits = self.gate(hidden_states)
@@ -7739,6 +7748,7 @@ def patched_qwen3_next_sparse_moe_block(self, hidden_states: torch.Tensor) -> to
     act_fn = self.experts[0].act_fn
 
     # compute experts outputs in a vectorized form
+    print("!!!!!! hidden_states dtype", hidden_states.dtype, self.gate_projs.dtype)
     gate = torch.bmm(hidden_states, self.gate_projs)
     up = torch.bmm(hidden_states, self.up_projs)
     gate_up = act_fn(gate) * up
@@ -7943,6 +7953,195 @@ def convert_chunked_attention_cell(context):
     return [final_output.output(0)]
 
 
+class RecurrentLinearAttention(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        initial_state: torch.Tensor,
+        output_final_state: bool,
+        use_qk_l2norm_in_kernel: bool = False,
+    ) -> torch.Tensor:
+        def l2norm(x: torch.FloatTensor, dim: int = -1, eps: float = 1e-6):
+            """This function is intended to align with the l2norm implementation in the FLA library."""
+            inv_norm = torch.rsqrt((x * x).sum(dim=dim, keepdim=True) + eps)
+            return x * inv_norm
+        q = query.transpose(1, 2).contiguous().to(torch.float32)
+        k = key.transpose(1, 2).contiguous().to(torch.float32)
+        v = value.transpose(1, 2).contiguous().to(torch.float32)
+        beta = beta.transpose(1, 2).contiguous().to(torch.float32)
+        g = g.transpose(1, 2).contiguous().to(torch.float32)
+        B, H, T, K, V = *k.shape, v.shape[-1]
+        o = torch.zeros(B, H, T, V).to(v)
+        if initial_state is None:
+            initial_state = torch.zeros(B, H, K, V).to(v)
+        h = initial_state
+        q = l2norm(q, dim=-1, eps=1e-6)
+        k = l2norm(k, dim=-1, eps=1e-6)
+        scale = 1 / (q.shape[-1] ** 0.5)
+        q = q * scale
+        for i in range(T):
+            b_q = q[:, :, i]
+            b_k = k[:, :, i]
+            b_v = v[:, :, i].clone()
+            h = h.clone() * g[:, :, i].exp()[..., None, None]
+            b_beta = beta[:, :, i]
+            b_v = b_v - (h.clone() * b_k[..., None]).sum(-2)
+            b_v = b_v * b_beta[..., None]
+            h = h.clone() + b_k.unsqueeze(-1) * b_v.unsqueeze(-2)
+            o[:, :, i] = torch.einsum('bhd,bhdm->bhm', b_q, h)
+        o = o.transpose(1, 2).contiguous()
+        combined_output = torch.cat([o.flatten(), h.flatten()], dim=0)
+        return combined_output
+
+def convert_recurrent_linear_cell2(context):
+    import openvino.opset14 as ops
+    import openvino as ov
+    import numpy as np
+
+    # context.get_input(0)
+    q = context.get_input(0)
+    k = context.get_input(1)
+    v = context.get_input(2)
+    g = context.get_input(3)
+    beta = context.get_input(4)
+    h0 = context.get_input(5)
+    dtype = np.float32
+
+    params = [q, k, v, beta, g, h0]
+
+    # L2 norm for q and k along last dim, then scale q by 1/sqrt(K)
+    # l2norm(x) = x * rsqrt(sum(x*x, dim=-1, keepdim=True) + eps)
+    last_axis = ops.constant([3], dtype=np.int32)
+    eps = ops.constant(1e-6, dtype=np.float32)
+
+    def l2norm_ov(x):
+        sq = ops.multiply(x, x)
+        s = ops.reduce_sum(sq, last_axis, True)
+        inv = ops.divide(ops.constant(1.0, dtype=np.float32), ops.sqrt(ops.add(s, eps)))
+        return ops.multiply(x, inv)
+
+    q_norm = l2norm_ov(q)
+    k_norm = l2norm_ov(k)
+
+    # Compute scale = 1/sqrt(K) from k's last dimension (dynamic-safe)
+    k_shape = ops.shape_of(k)
+    k_last_idx = ops.constant([3], dtype=np.int64)
+    k_last_dim_i64 = ops.gather(k_shape, k_last_idx, ops.constant(0, dtype=np.int64))
+    k_last_dim_f32 = ops.convert(k_last_dim_i64, "f32")
+    scale = ops.divide(ops.constant(1.0, dtype=np.float32), ops.sqrt(k_last_dim_f32))
+    q_scaled = ops.multiply(q_norm, scale)
+
+    # Preallocate output buffer (same shape as v)
+    v_shape = ops.shape_of(v)
+    core_attn_init = ops.broadcast(ops.constant(0.0, dtype=np.float32), v_shape)
+
+    # Body params (timestep and sliced inputs)
+    timestep = ops.parameter([], np.int32, "timestep")
+    # Sliced along axis=1 (time dimension), keep a size-1 dim to squeeze inside body
+    q_i_param = ops.parameter([-1, 1, -1, -1], dtype, "q_i")
+    k_i_param = ops.parameter([-1, 1, -1, -1], dtype, "k_i")
+    v_i_param = ops.parameter([-1, 1, -1, -1], dtype, "v_i")
+    beta_i_param = ops.parameter([-1, 1, -1], dtype, "beta_i")
+    g_i_param = ops.parameter([-1, 1, -1], dtype, "g_i")
+    h_param = ops.parameter([-1, -1, -1, -1], dtype, "h_in")
+    core_attn_buf = ops.parameter([-1, -1, -1, -1], dtype, "core_buf")
+
+    # Squeeze the size-1 time dim
+    const_axis_time = ops.constant(1, dtype=np.int32)
+    b_q = ops.squeeze(q_i_param, const_axis_time)   # (B, H, K)
+    b_k = ops.squeeze(k_i_param, const_axis_time)   # (B, H, K)
+    b_v = ops.squeeze(v_i_param, const_axis_time)   # (B, H, V)
+    b_beta = ops.squeeze(beta_i_param, const_axis_time)  # (B, H)
+    b_g = ops.squeeze(g_i_param, const_axis_time)   # (B, H)
+
+    # h decay: h = h * exp(g[..., None, None])
+    const_minus1 = ops.constant(-1, dtype=np.int32)
+    g_unsq1 = ops.unsqueeze(b_g, const_minus1)
+    g_unsq2 = ops.unsqueeze(g_unsq1, const_minus1)  # (B, H, 1, 1)
+    # Explicit tile exp(g) over K and V to match h shape and avoid broadcast ambiguity
+    exp_g = ops.exp(g_unsq2)  # (B,H,1,1)
+    h_shape = ops.shape_of(h_param)  # (B,H,K,V)
+    k_idx = ops.constant([2], dtype=np.int64)
+    v_idx = ops.constant([3], dtype=np.int64)
+    dim_k = ops.gather(h_shape, k_idx, ops.constant(0, dtype=np.int64))
+    dim_v = ops.gather(h_shape, v_idx, ops.constant(0, dtype=np.int64))
+    # Build tile multipliers relative to (B,H,1,1): set B,H repeats to 1, tile over K and V
+    ones_bh = ops.constant([1, 1], dtype=np.int64)
+    kv_repeats = ops.concat([ones_bh, ops.convert(dim_k, "i64"), ops.convert(dim_v, "i64")], 0)
+    exp_g_tiled = ops.tile(exp_g, kv_repeats)
+    h_decay = ops.multiply(h_param, exp_g_tiled)
+
+    # v_prime = sum_k(h * k) via MatMul: (B,H,V,K) x (B,H,K,1) -> (B,H,V,1) -> (B,H,V)
+    b_k_unsq_v = ops.unsqueeze(b_k, const_minus1)           # (B,H,K,1)
+    h_decay_t = ops.transpose(h_decay, ops.constant([0, 1, 3, 2], dtype=np.int64))
+    v_prime_unsq = ops.matmul(h_decay_t, b_k_unsq_v, False, False)  # (B,H,V,1)
+    v_prime = ops.squeeze(v_prime_unsq, ops.constant(3, dtype=np.int32))
+    v_new = ops.subtract(b_v, v_prime)
+    b_beta_unsq = ops.unsqueeze(b_beta, const_minus1)  # (B,H,1)
+    v_new_shape = ops.shape_of(v_new)
+    b_beta_broad = ops.broadcast(b_beta_unsq, v_new_shape)
+    v_scaled = ops.multiply(v_new, b_beta_broad)
+
+    # update h: outer(b_k, v_scaled) via MatMul to avoid broadcast
+    v_scaled_unsq_k = ops.unsqueeze(v_scaled, ops.constant(2, dtype=np.int32))  # (B,H,1,V)
+    b_k_unsq = ops.unsqueeze(b_k, const_minus1)  # (B,H,K,1)
+    h_update = ops.matmul(b_k_unsq, v_scaled_unsq_k, False, False)  # (B,H,K,V)
+    h_res = ops.add(h_decay, h_update)
+
+    # o_step = sum_k(h * q) via MatMul: (B,H,V,K) x (B,H,K,1) -> (B,H,V,1) -> (B,H,V)
+    b_q_unsq_v = ops.unsqueeze(b_q, const_minus1)           # (B,H,K,1)
+    h_res_t = ops.transpose(h_res, ops.constant([0, 1, 3, 2], dtype=np.int64))
+    o_step_unsq = ops.matmul(h_res_t, b_q_unsq_v, False, False)  # (B,H,V,1)
+    o_step = ops.squeeze(o_step_unsq, ops.constant(3, dtype=np.int32))
+    # write into buffer at timestep along axis=1
+    const_axis_t = ops.constant(1, dtype=np.int32)
+    timestep_unsq = ops.unsqueeze(timestep, ops.constant(0, dtype=np.int32))
+    o_unsq = ops.unsqueeze(o_step, const_axis_t)
+    core_buf_res = ops.scatter_update(core_attn_buf, timestep_unsq, o_unsq, const_axis_t)
+
+    body_cond = ops.constant([True], dtype=bool)
+    body_model = ov.Model([body_cond, h_res, core_buf_res],
+                          [timestep, q_i_param, k_i_param, v_i_param, beta_i_param, g_i_param, h_param, core_attn_buf],
+                          "recurrent_body")
+
+    # Trip count: T = shape_of(v)[1] (still dynamic in batch/sequence)
+    v_shape_dyn = ops.shape_of(v)
+    t_index = ops.constant([1], dtype=np.int64)
+    trip_count = ops.convert(ops.gather(v_shape_dyn, t_index, ops.constant(0, dtype=np.int64)), "i32")
+
+    loop = ops.loop(trip_count, ops.constant(True, dtype="bool"))
+    loop.set_function(body_model)
+
+    # Map sliced inputs (axis=1 is time)
+    loop.set_sliced_input(q_i_param, q_scaled.output(0), 0, 1, 1, -1, 1)
+    loop.set_sliced_input(k_i_param, k_norm.output(0), 0, 1, 1, -1, 1)
+    loop.set_sliced_input(v_i_param, v, 0, 1, 1, -1, 1)
+    loop.set_sliced_input(beta_i_param, beta, 0, 1, 1, -1, 1)
+    loop.set_sliced_input(g_i_param, g, 0, 1, 1, -1, 1)
+
+    # Merged inputs
+    loop.set_merged_input(h_param, h0, h_res.output(0))
+    loop.set_merged_input(core_attn_buf, core_attn_init.output(0), core_buf_res.output(0))
+
+    # Special ports: [iteration input idx, condition output idx]
+    loop.set_special_body_ports([0, 0])
+
+    core_attn_final = loop.get_iter_value(core_buf_res.output(0), -1)
+    h_final = loop.get_iter_value(h_res.output(0), -1)
+
+    flatten_shape = ops.constant([-1], dtype=np.int32)
+    core_attn_out_new = ops.reshape(core_attn_final, flatten_shape, False)
+    last_recurrent_state_new = ops.reshape(h_final, flatten_shape, False)
+    final_output = ops.concat([core_attn_out_new, last_recurrent_state_new], 0)
+
+    return [final_output.output(0)]
+
 class Qwen3NextModelPatcher(ModelPatcher):
     def __init__(
         self,
@@ -8072,10 +8271,10 @@ class Qwen3NextModelPatcher(ModelPatcher):
         self.orig_forward = patched_forward
 
         self.module_extensions = {
-            ChunkedAttentionCell: ModuleExtension(ChunkedAttentionCell, "ChunkedAttentionCellOp"),
+            RecurrentLinearAttention: ModuleExtension(RecurrentLinearAttention, "RecurrentLinearAttentionOp"),
         }
         self.conversion_extensions = [
-            ConversionExtension("ChunkedAttentionCellOp", convert_chunked_attention_cell),
+            ConversionExtension("RecurrentLinearAttentionOp", convert_recurrent_linear_cell2),
         ]
 
     def __enter__(self):
@@ -8096,8 +8295,8 @@ class Qwen3NextModelPatcher(ModelPatcher):
                 linear_attn_layer.chunk_gated_delta_rule = patched_chunk_gated_delta_rule
                 linear_attn_layer._orig_recurrent_gated_delta_rule = linear_attn_layer.recurrent_gated_delta_rule
                 linear_attn_layer.recurrent_gated_delta_rule = patched_recurrent_gated_delta_rule
-                linear_attn_layer.chunked_attention_cell = ChunkedAttentionCell()
-                chunked_attention_cell_list.append(linear_attn_layer.chunked_attention_cell)
+                linear_attn_layer.recurrent_attention_cell = RecurrentLinearAttention()
+                # chunked_attention_cell_list.append(linear_attn_layer.chunked_attention_cell)
             if isinstance(decoder_layer.mlp, Qwen3NextSparseMoeBlock):
                 sparse_moe_block = decoder_layer.mlp
                 num_experts = sparse_moe_block.num_experts
