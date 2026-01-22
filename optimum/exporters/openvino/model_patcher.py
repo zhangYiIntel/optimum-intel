@@ -8122,8 +8122,8 @@ def convert_recurrent_linear_cell2(context):
     loop.set_sliced_input(q_i_param, q_scaled.output(0), 0, 1, 1, -1, 1)
     loop.set_sliced_input(k_i_param, k_norm.output(0), 0, 1, 1, -1, 1)
     loop.set_sliced_input(v_i_param, v, 0, 1, 1, -1, 1)
-    loop.set_sliced_input(beta_i_param, beta, 0, 1, 1, -1, 1)
     loop.set_sliced_input(g_i_param, g, 0, 1, 1, -1, 1)
+    loop.set_sliced_input(beta_i_param, beta, 0, 1, 1, -1, 1)
 
     # Merged inputs
     loop.set_merged_input(h_param, h0, h_res.output(0))
